@@ -1,4 +1,4 @@
 .env
 ./venv__pycache__/
 *.pyc
-chroma_db/
+data/.cache
