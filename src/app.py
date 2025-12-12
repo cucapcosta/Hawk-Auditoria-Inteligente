@@ -8,6 +8,8 @@ from datetime import datetime
 from rag import get_rag
 from synth import synthesize
 from router import route
+from emails_analyzer import get_emails_analyzer
+from auditor import audit
 
 # Configuracao da pagina
 st.set_page_config(
@@ -276,7 +278,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# === INICIALIZACAO DO RAG (tela de loading) ===
+# === INICIALIZACAO (tela de loading) ===
 if not st.session_state.rag_ready:
     st.markdown("""
     <div class="output-box system">
@@ -288,14 +290,27 @@ if not st.session_state.rag_ready:
     progress_container = st.empty()
     
     try:
+        status_lines = []
+        
+        # Inicializa RAG de compliance
         rag = get_rag()
         st.session_state.rag_instance = rag
         
-        # Inicializa e mostra progresso
-        status_lines = []
         for status in rag.initialize():
             status_lines.append(f">> {status}")
-            progress_html = "<br>".join(status_lines[-10:])  # Mostra ultimas 10 linhas
+            progress_html = "<br>".join(status_lines[-10:])
+            progress_container.markdown(
+                f'<div class="output-box step">{progress_html}</div>',
+                unsafe_allow_html=True
+            )
+        
+        # Inicializa analisador de emails
+        emails_analyzer = get_emails_analyzer()
+        st.session_state.emails_analyzer = emails_analyzer
+        
+        for status in emails_analyzer.initialize():
+            status_lines.append(f">> {status}")
+            progress_html = "<br>".join(status_lines[-10:])
             progress_container.markdown(
                 f'<div class="output-box step">{progress_html}</div>',
                 unsafe_allow_html=True
@@ -385,8 +400,11 @@ if submitted and prompt and not st.session_state.processing:
     try:
         logs = []
         
-        # 0. Router - decide qual fluxo seguir
-        route_name = run_generator(route(prompt), logs, live_logs)
+        # 0. Router - decide qual fluxo seguir e extrai entidades
+        route_result = run_generator(route(prompt), logs, live_logs)
+        route_name = route_result.get("rota", "compliance") if route_result else "compliance"
+        pessoa = route_result.get("pessoa") if route_result else None
+        periodo = route_result.get("periodo") if route_result else None
         
         if route_name == "compliance":
             # Fluxo de compliance: RAG + Synth
@@ -402,16 +420,41 @@ if submitted and prompt and not st.session_state.processing:
             answer = answer or "Erro ao sintetizar resposta."
         
         elif route_name == "emails":
-            # TODO: Implementar analise de emails
-            answer = "ANALISE DE EMAILS: Funcionalidade em desenvolvimento."
+            # Analise de emails
+            emails_analyzer = st.session_state.emails_analyzer
+            if emails_analyzer is None:
+                raise Exception("Analisador de emails nao inicializado")
+            
+            # Busca emails
+            emails = run_generator(emails_analyzer.search(prompt, pessoa=pessoa), logs, live_logs) or []
+            
+            if emails:
+                # Formata emails encontrados
+                email_texts = []
+                for e in emails[:10]:
+                    email_texts.append(f"De: {e['de']} | Para: {e['para']} | {e['data']}")
+                    email_texts.append(f"Assunto: {e['assunto']}")
+                    email_texts.append(f"{e['mensagem'][:200]}...")
+                    email_texts.append("---")
+                
+                answer = f"EMAILS ENCONTRADOS ({len(emails)}):\n\n" + "\n".join(email_texts)
+            else:
+                answer = "Nenhum email encontrado."
         
         elif route_name == "transacoes":
-            # TODO: Implementar analise de transacoes
-            answer = "ANALISE DE TRANSACOES: Funcionalidade em desenvolvimento."
+            # Analise de transacoes (direto do CSV)
+            from auditor import load_transactions, format_transactions
+            
+            transactions = load_transactions(pessoa=pessoa, periodo=periodo)
+            if transactions:
+                answer = f"TRANSACOES ENCONTRADAS:\n\n{format_transactions(transactions, limit=30)}"
+            else:
+                answer = "Nenhuma transacao encontrada."
         
         elif route_name == "auditoria":
-            # TODO: Implementar auditoria completa
-            answer = "AUDITORIA COMPLETA: Funcionalidade em desenvolvimento."
+            # Auditoria completa
+            answer = run_generator(audit(prompt, pessoa=pessoa, periodo=periodo), logs, live_logs)
+            answer = answer or "Erro na auditoria."
         
         else:
             answer = "Rota desconhecida."

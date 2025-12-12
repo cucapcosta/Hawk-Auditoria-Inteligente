@@ -1,0 +1,225 @@
+"""
+Emails Analyzer - Indexa e analisa emails para detectar fraudes
+Usa FAISS para busca semantica
+"""
+
+import os
+import json
+import hashlib
+import re
+from typing import Generator, Any
+
+import faiss  # type: ignore
+import numpy as np
+import ollama
+
+# Configuracoes
+EMBEDDING_MODEL = "mxbai-embed-large"
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+EMAILS_FILE = os.path.join(DATA_DIR, "emails.txt")
+CACHE_DIR = os.path.join(DATA_DIR, ".cache")
+INDEX_FILE = os.path.join(CACHE_DIR, "emails.index")
+CHUNKS_FILE = os.path.join(CACHE_DIR, "emails.json")
+HASH_FILE = os.path.join(CACHE_DIR, "emails.hash")
+
+
+class EmailsAnalyzer:
+    """Analisador de emails com busca semantica"""
+    
+    def __init__(self):
+        self.emails: list[dict] = []  # Lista de emails parseados
+        self.index: Any = None
+        self.dimension: int = 1024
+        self._initialized = False
+    
+    def _get_file_hash(self, filepath: str) -> str:
+        """Calcula hash MD5 do arquivo"""
+        with open(filepath, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    
+    def _cache_exists(self) -> bool:
+        """Verifica se o cache existe e eh valido"""
+        if not all(os.path.exists(f) for f in [INDEX_FILE, CHUNKS_FILE, HASH_FILE]):
+            return False
+        
+        with open(HASH_FILE, "r") as f:
+            cached_hash = f.read().strip()
+        
+        current_hash = self._get_file_hash(EMAILS_FILE)
+        return cached_hash == current_hash
+    
+    def _load_cache(self) -> bool:
+        """Carrega index e emails do cache"""
+        try:
+            self.index = faiss.read_index(INDEX_FILE)
+            with open(CHUNKS_FILE, "r", encoding="utf-8") as f:
+                self.emails = json.load(f)
+            return True
+        except Exception:
+            return False
+    
+    def _save_cache(self) -> None:
+        """Salva index e emails no cache"""
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        faiss.write_index(self.index, INDEX_FILE)
+        with open(CHUNKS_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.emails, f, ensure_ascii=False)
+        with open(HASH_FILE, "w") as f:
+            f.write(self._get_file_hash(EMAILS_FILE))
+    
+    def _get_embedding(self, text: str) -> np.ndarray:
+        """Gera embedding via Ollama"""
+        response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=text)
+        return np.array(response["embedding"], dtype=np.float32)
+    
+    def _parse_emails(self, content: str) -> list[dict]:
+        """Parseia arquivo de emails em lista estruturada"""
+        emails = []
+        
+        # Divide por separador
+        raw_emails = content.split("-" * 79)
+        
+        for raw in raw_emails:
+            raw = raw.strip()
+            if not raw or "De:" not in raw:
+                continue
+            
+            email = {
+                "de": "",
+                "para": "",
+                "data": "",
+                "assunto": "",
+                "mensagem": "",
+                "texto_completo": raw
+            }
+            
+            lines = raw.split("\n")
+            in_message = False
+            message_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                
+                if line.startswith("De:"):
+                    # Extrai nome do email
+                    match = re.search(r"De:\s*([^<]+)", line)
+                    if match:
+                        email["de"] = match.group(1).strip()
+                elif line.startswith("Para:"):
+                    match = re.search(r"Para:\s*([^<]+)", line)
+                    if match:
+                        email["para"] = match.group(1).strip()
+                elif line.startswith("Data:"):
+                    email["data"] = line.replace("Data:", "").strip()
+                elif line.startswith("Assunto:"):
+                    email["assunto"] = line.replace("Assunto:", "").strip()
+                elif line.startswith("Mensagem:"):
+                    in_message = True
+                elif in_message and line:
+                    message_lines.append(line)
+            
+            email["mensagem"] = " ".join(message_lines)
+            
+            if email["de"] and email["mensagem"]:
+                emails.append(email)
+        
+        return emails
+    
+    def initialize(self) -> Generator[str, None, None]:
+        """Inicializa o analisador de emails"""
+        
+        yield "VERIFICANDO CACHE DE EMAILS..."
+        
+        if self._cache_exists():
+            yield "CACHE DE EMAILS ENCONTRADO"
+            if self._load_cache():
+                yield f"CARREGADO: {len(self.emails)} EMAILS"
+                self._initialized = True
+                return
+        
+        yield "INDEXANDO EMAILS..."
+        
+        with open(EMAILS_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        self.emails = self._parse_emails(content)
+        yield f"{len(self.emails)} EMAILS PARSEADOS"
+        
+        yield "GERANDO EMBEDDINGS DE EMAILS..."
+        embeddings = []
+        for i, email in enumerate(self.emails):
+            # Texto para embedding: combina campos relevantes
+            text = f"De: {email['de']} Para: {email['para']} Assunto: {email['assunto']} {email['mensagem']}"
+            emb = self._get_embedding(text)
+            embeddings.append(emb)
+            if i == 0:
+                self.dimension = len(emb)
+            if (i + 1) % 20 == 0:
+                yield f"EMBEDDING {i+1}/{len(self.emails)}"
+        
+        yield f"EMBEDDING {len(self.emails)}/{len(self.emails)}"
+        
+        embeddings_matrix = np.vstack(embeddings)
+        self.index = faiss.IndexFlatL2(self.dimension)
+        self.index.add(embeddings_matrix)
+        
+        yield "SALVANDO CACHE DE EMAILS..."
+        self._save_cache()
+        
+        self._initialized = True
+        yield "EMAILS INDEXADOS"
+    
+    def search(self, query: str, pessoa: str | None = None, k: int = 10) -> Generator[str, None, list[dict]]:
+        """Busca emails relevantes"""
+        
+        if not self._initialized:
+            yield "ERRO: EMAILS NAO INDEXADOS"
+            return []
+        
+        yield f"BUSCANDO EMAILS..."
+        
+        # Se tiver pessoa, filtra primeiro
+        if pessoa:
+            yield f"FILTRANDO POR: {pessoa}"
+            pessoa_lower = pessoa.lower()
+            filtered_indices = []
+            for i, email in enumerate(self.emails):
+                if (pessoa_lower in email["de"].lower() or 
+                    pessoa_lower in email["para"].lower() or
+                    pessoa_lower in email["mensagem"].lower()):
+                    filtered_indices.append(i)
+            
+            if not filtered_indices:
+                yield f"NENHUM EMAIL ENCONTRADO PARA {pessoa}"
+                return []
+            
+            yield f"{len(filtered_indices)} EMAILS DE/PARA {pessoa}"
+            
+            # Retorna todos os emails da pessoa (sem busca semantica)
+            results = [self.emails[i] for i in filtered_indices[:k]]
+        else:
+            # Busca semantica
+            query_emb = self._get_embedding(query)
+            query_emb = query_emb.reshape(1, -1)
+            
+            distances, indices = self.index.search(query_emb, k)
+            
+            results = []
+            for idx in indices[0]:
+                if idx < len(self.emails):
+                    results.append(self.emails[idx])
+        
+        yield f"{len(results)} EMAILS ENCONTRADOS"
+        return results
+
+
+# Singleton
+_analyzer_instance: EmailsAnalyzer | None = None
+
+
+def get_emails_analyzer() -> EmailsAnalyzer:
+    """Retorna instancia singleton"""
+    global _analyzer_instance
+    if _analyzer_instance is None:
+        _analyzer_instance = EmailsAnalyzer()
+    return _analyzer_instance
