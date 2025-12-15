@@ -213,6 +213,86 @@ class EmailsAnalyzer:
         return results
 
 
+    def analyze(self, query: str, pessoas: list[str] | None = None) -> Generator[str, None, str]:
+        """
+        Analisa emails buscando conteudo especifico.
+        Usa LLM para sintetizar os achados.
+        Aceita lista de pessoas para filtrar.
+        """
+        
+        yield "BUSCANDO EMAILS RELEVANTES..."
+        
+        # Busca emails de todas as pessoas mencionadas
+        emails = []
+        if pessoas:
+            for pessoa in pessoas:
+                search_gen = self.search(query, pessoa=pessoa, k=10)
+                try:
+                    while True:
+                        status = next(search_gen)
+                        yield status
+                except StopIteration as e:
+                    found = e.value or []
+                    # Evita duplicatas
+                    for email in found:
+                        if email not in emails:
+                            emails.append(email)
+        else:
+            # Busca semantica sem filtro de pessoa
+            search_gen = self.search(query, k=15)
+            try:
+                while True:
+                    status = next(search_gen)
+                    yield status
+            except StopIteration as e:
+                emails = e.value or []
+        
+        if not emails:
+            yield "NENHUM EMAIL ENCONTRADO"
+            return "Nao encontrei emails relevantes para sua busca."
+        
+        yield "ANALISANDO CONTEUDO..."
+        
+        # Formata emails para contexto
+        emails_text = []
+        for e in emails[:10]:
+            emails_text.append(f"De: {e['de']}")
+            emails_text.append(f"Para: {e['para']}")
+            emails_text.append(f"Data: {e['data']}")
+            emails_text.append(f"Assunto: {e['assunto']}")
+            emails_text.append(f"Mensagem: {e['mensagem']}")
+            emails_text.append("---")
+        
+        context = "\n".join(emails_text)
+        
+        system_prompt = """Voce e um analista de emails corporativos.
+Analise os emails fornecidos e responda a pergunta do usuario.
+Seja especifico: cite remetentes, datas e trechos relevantes.
+NAO use markdown. Texto simples apenas."""
+
+        user_prompt = f"""EMAILS:
+{context}
+
+PERGUNTA: {query}
+
+ANALISE:"""
+
+        yield "CONSULTANDO LLM..."
+        
+        response = ollama.chat(
+            model="llama3.2",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        
+        answer = response["message"]["content"]
+        
+        yield "ANALISE CONCLUIDA"
+        return answer
+
+
 # Singleton
 _analyzer_instance: EmailsAnalyzer | None = None
 

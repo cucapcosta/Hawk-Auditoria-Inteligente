@@ -9,25 +9,25 @@ import ollama
 
 LLM_MODEL = "llama3.2"
 
-SYSTEM_PROMPT = """Classifique a pergunta em uma categoria e extraia entidades.
+SYSTEM_PROMPT = """Classifique a pergunta e extraia pessoas mencionadas.
 
 CATEGORIAS:
-- compliance: Perguntas sobre REGRAS da empresa, politicas, limites de gastos, o que pode/nao pode.
-- emails: Quando pedir para VER ou ANALISAR emails de alguem.
-- transacoes: Quando pedir para VER ou ANALISAR transacoes/gastos de alguem.
-- auditoria: Quando mencionar FRAUDE, INVESTIGAR, SUSPEITO, IRREGULARIDADE, ou pedir analise completa de alguem.
+- compliance: Perguntas sobre REGRAS, politicas, limites. Nao menciona pessoa especifica.
+- emails: Quer saber o que alguem DISSE, escreveu, conversou, conspirou.
+- transacoes: Quer VER gastos/transacoes de alguem.
+- auditoria: Menciona FRAUDE, investigar alguem, desvio, irregularidade.
 
-EXTRAIA entidades mencionadas:
-- pessoa: Nome proprio mencionado (Ryan, Michael, Dwight, etc)
-- periodo: Data ou mes mencionado
+REGRA: Se menciona "fraude" ou "investigar" + nome de pessoa = auditoria
 
 EXEMPLOS:
-"Qual o limite de gastos?" -> {"rota": "compliance", "pessoa": null, "periodo": null}
-"O Ryan esta cometendo fraude?" -> {"rota": "auditoria", "pessoa": "Ryan", "periodo": null}
-"Analise os emails do Dwight" -> {"rota": "emails", "pessoa": "Dwight", "periodo": null}
-"Investigue Michael Scott" -> {"rota": "auditoria", "pessoa": "Michael Scott", "periodo": null}
+"Qual o limite de gastos?" -> {"rota": "compliance", "pessoas": [], "periodo": null}
+"Ryan esta cometendo fraude?" -> {"rota": "auditoria", "pessoas": ["Ryan"], "periodo": null}
+"Investigue o Ryan" -> {"rota": "auditoria", "pessoas": ["Ryan"], "periodo": null}
+"O que o Dwight disse?" -> {"rota": "emails", "pessoas": ["Dwight"], "periodo": null}
+"Ryan e Toby estao conspirando?" -> {"rota": "emails", "pessoas": ["Ryan", "Toby"], "periodo": null}
+"Transacoes da Angela" -> {"rota": "transacoes", "pessoas": ["Angela"], "periodo": null}
 
-Responda APENAS o JSON:"""
+Responda APENAS JSON:"""
 
 
 def route(question: str) -> Generator[str, None, dict]:
@@ -59,10 +59,10 @@ def route(question: str) -> Generator[str, None, dict]:
             json_str = answer[answer.find("{"):answer.rfind("}")+1]
             result = json.loads(json_str)
         else:
-            result = {"rota": "compliance", "pessoa": None, "periodo": None}
+            result = {"rota": "compliance", "pessoas": [], "periodo": None}
     except json.JSONDecodeError:
         # Fallback: tenta extrair rota do texto
-        result = {"rota": "compliance", "pessoa": None, "periodo": None}
+        result = {"rota": "compliance", "pessoas": [], "periodo": None}
         for rota in ["auditoria", "emails", "transacoes", "compliance"]:
             if rota in answer.lower():
                 result["rota"] = rota
@@ -73,14 +73,21 @@ def route(question: str) -> Generator[str, None, dict]:
     if result.get("rota") not in valid_routes:
         result["rota"] = "compliance"
     
+    # Normaliza pessoas (garante que seja lista)
+    pessoas = result.get("pessoas") or result.get("pessoa")
+    if pessoas is None:
+        pessoas = []
+    elif isinstance(pessoas, str):
+        pessoas = [pessoas]
+    result["pessoas"] = pessoas
+    
     # Log
     rota = result["rota"].upper()
-    pessoa = result.get("pessoa")
     periodo = result.get("periodo")
     
     info_parts = [f"ROTA: {rota}"]
-    if pessoa:
-        info_parts.append(f"PESSOA: {pessoa}")
+    if pessoas:
+        info_parts.append(f"PESSOAS: {', '.join(pessoas)}")
     if periodo:
         info_parts.append(f"PERIODO: {periodo}")
     

@@ -403,7 +403,7 @@ if submitted and prompt and not st.session_state.processing:
         # 0. Router - decide qual fluxo seguir e extrai entidades
         route_result = run_generator(route(prompt), logs, live_logs)
         route_name = route_result.get("rota", "compliance") if route_result else "compliance"
-        pessoa = route_result.get("pessoa") if route_result else None
+        pessoas = route_result.get("pessoas", []) if route_result else []
         periodo = route_result.get("periodo") if route_result else None
         
         if route_name == "compliance":
@@ -420,40 +420,35 @@ if submitted and prompt and not st.session_state.processing:
             answer = answer or "Erro ao sintetizar resposta."
         
         elif route_name == "emails":
-            # Analise de emails
+            # Analise de emails com LLM
             emails_analyzer = st.session_state.emails_analyzer
             if emails_analyzer is None:
                 raise Exception("Analisador de emails nao inicializado")
             
-            # Busca emails
-            emails = run_generator(emails_analyzer.search(prompt, pessoa=pessoa), logs, live_logs) or []
-            
-            if emails:
-                # Formata emails encontrados
-                email_texts = []
-                for e in emails[:10]:
-                    email_texts.append(f"De: {e['de']} | Para: {e['para']} | {e['data']}")
-                    email_texts.append(f"Assunto: {e['assunto']}")
-                    email_texts.append(f"{e['mensagem'][:200]}...")
-                    email_texts.append("---")
-                
-                answer = f"EMAILS ENCONTRADOS ({len(emails)}):\n\n" + "\n".join(email_texts)
-            else:
-                answer = "Nenhum email encontrado."
+            # Analisa emails (busca por todas as pessoas)
+            answer = run_generator(emails_analyzer.analyze(prompt, pessoas=pessoas), logs, live_logs)
+            answer = answer or "Nenhum email encontrado."
         
         elif route_name == "transacoes":
             # Analise de transacoes (direto do CSV)
             from auditor import load_transactions, format_transactions
             
-            transactions = load_transactions(pessoa=pessoa, periodo=periodo)
-            if transactions:
-                answer = f"TRANSACOES ENCONTRADAS:\n\n{format_transactions(transactions, limit=30)}"
+            # Carrega transacoes de todas as pessoas
+            all_transactions = []
+            for pessoa in pessoas:
+                all_transactions.extend(load_transactions(pessoa=pessoa, periodo=periodo))
+            if not pessoas:
+                all_transactions = load_transactions(periodo=periodo)
+            
+            if all_transactions:
+                answer = f"TRANSACOES ENCONTRADAS:\n\n{format_transactions(all_transactions, limit=30)}"
             else:
                 answer = "Nenhuma transacao encontrada."
         
         elif route_name == "auditoria":
-            # Auditoria completa
-            answer = run_generator(audit(prompt, pessoa=pessoa, periodo=periodo), logs, live_logs)
+            # Auditoria completa (usa primeira pessoa como foco principal)
+            pessoa_principal = pessoas[0] if pessoas else None
+            answer = run_generator(audit(prompt, pessoa=pessoa_principal, periodo=periodo), logs, live_logs)
             answer = answer or "Erro na auditoria."
         
         else:
