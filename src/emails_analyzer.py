@@ -109,9 +109,9 @@ class EmailsAnalyzer:
         with open(HASH_FILE, "w") as f:
             f.write(self._get_file_hash(EMAILS_FILE))
     
-    def _get_embedding(self, text: str, max_chars: int = 2000) -> np.ndarray:
+    def _get_embedding(self, text: str, max_chars: int = 1500) -> np.ndarray:
         """Gera embedding via Ollama. Trunca texto para evitar exceder contexto."""
-        # mxbai-embed-large tem limite de ~512 tokens
+        # mxbai-embed-large tem limite de ~512 tokens (~1500-2000 chars)
         if len(text) > max_chars:
             text = text[:max_chars]
         response = ollama.embeddings(model=EMBEDDING_MODEL, prompt=text)
