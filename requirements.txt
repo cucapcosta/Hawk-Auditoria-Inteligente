@@ -1,5 +1,10 @@
 streamlit>=1.28.0
 ollama>=0.1.0
-faiss-cpu>=1.7.0
 numpy>=1.24.0
 pandas>=2.0.0
+
+# FAISS - escolha uma das opcoes:
+# Para CPU (padrao):
+faiss-cpu>=1.7.0
+# Para GPU NVIDIA (descomente e comente a linha acima):
+# faiss-gpu>=1.7.0

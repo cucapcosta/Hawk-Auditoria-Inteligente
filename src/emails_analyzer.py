@@ -1,6 +1,7 @@
 """
 Emails Analyzer - Indexa e analisa emails para detectar fraudes
 Usa FAISS para busca semantica
+Suporta GPU NVIDIA quando disponivel (faiss-gpu)
 """
 
 import os
@@ -23,6 +24,41 @@ CHUNKS_FILE = os.path.join(CACHE_DIR, "emails.json")
 HASH_FILE = os.path.join(CACHE_DIR, "emails.hash")
 
 
+# Detecta GPU
+def _detect_gpu() -> tuple[bool, int]:
+    """Detecta se GPU esta disponivel para FAISS"""
+    try:
+        num_gpus = faiss.get_num_gpus()  # type: ignore
+        return num_gpus > 0, num_gpus
+    except AttributeError:
+        # faiss-cpu nao tem get_num_gpus
+        return False, 0
+
+
+HAS_GPU, NUM_GPUS = _detect_gpu()
+
+
+def _index_to_gpu(index: Any) -> Any:
+    """Move index para GPU se disponivel"""
+    if HAS_GPU:
+        try:
+            res = faiss.StandardGpuResources()  # type: ignore
+            return faiss.index_cpu_to_gpu(res, 0, index)  # type: ignore
+        except Exception:
+            return index
+    return index
+
+
+def _index_to_cpu(index: Any) -> Any:
+    """Move index para CPU (para salvar em disco)"""
+    if HAS_GPU:
+        try:
+            return faiss.index_gpu_to_cpu(index)  # type: ignore
+        except Exception:
+            return index
+    return index
+
+
 class EmailsAnalyzer:
     """Analisador de emails com busca semantica"""
     
@@ -31,6 +67,7 @@ class EmailsAnalyzer:
         self.index: Any = None
         self.dimension: int = 1024
         self._initialized = False
+        self._using_gpu = False
     
     def _get_file_hash(self, filepath: str) -> str:
         """Calcula hash MD5 do arquivo"""
@@ -51,7 +88,10 @@ class EmailsAnalyzer:
     def _load_cache(self) -> bool:
         """Carrega index e emails do cache"""
         try:
-            self.index = faiss.read_index(INDEX_FILE)
+            cpu_index = faiss.read_index(INDEX_FILE)
+            # Tenta mover para GPU
+            self.index = _index_to_gpu(cpu_index)
+            self._using_gpu = HAS_GPU
             with open(CHUNKS_FILE, "r", encoding="utf-8") as f:
                 self.emails = json.load(f)
             return True
@@ -61,7 +101,9 @@ class EmailsAnalyzer:
     def _save_cache(self) -> None:
         """Salva index e emails no cache"""
         os.makedirs(CACHE_DIR, exist_ok=True)
-        faiss.write_index(self.index, INDEX_FILE)
+        # Precisa converter para CPU antes de salvar
+        cpu_index = _index_to_cpu(self.index)
+        faiss.write_index(cpu_index, INDEX_FILE)
         with open(CHUNKS_FILE, "w", encoding="utf-8") as f:
             json.dump(self.emails, f, ensure_ascii=False)
         with open(HASH_FILE, "w") as f:
@@ -128,12 +170,19 @@ class EmailsAnalyzer:
     def initialize(self) -> Generator[str, None, None]:
         """Inicializa o analisador de emails"""
         
+        # Info sobre GPU
+        if HAS_GPU:
+            yield f"GPU DETECTADA: {NUM_GPUS} DISPOSITIVO(S)"
+        else:
+            yield "MODO CPU (GPU NAO DISPONIVEL)"
+        
         yield "VERIFICANDO CACHE DE EMAILS..."
         
         if self._cache_exists():
             yield "CACHE DE EMAILS ENCONTRADO"
             if self._load_cache():
-                yield f"CARREGADO: {len(self.emails)} EMAILS"
+                gpu_status = " [GPU]" if self._using_gpu else " [CPU]"
+                yield f"CARREGADO: {len(self.emails)} EMAILS{gpu_status}"
                 self._initialized = True
                 return
         
@@ -160,14 +209,19 @@ class EmailsAnalyzer:
         yield f"EMBEDDING {len(self.emails)}/{len(self.emails)}"
         
         embeddings_matrix = np.vstack(embeddings)
-        self.index = faiss.IndexFlatL2(self.dimension)
-        self.index.add(embeddings_matrix)
+        cpu_index = faiss.IndexFlatL2(self.dimension)
+        cpu_index.add(embeddings_matrix)
+        
+        # Tenta mover para GPU
+        self.index = _index_to_gpu(cpu_index)
+        self._using_gpu = HAS_GPU
         
         yield "SALVANDO CACHE DE EMAILS..."
         self._save_cache()
         
         self._initialized = True
-        yield "EMAILS INDEXADOS"
+        gpu_status = " [GPU]" if self._using_gpu else " [CPU]"
+        yield f"EMAILS INDEXADOS{gpu_status}"
     
     def search(self, query: str, pessoa: str | None = None, k: int = 10) -> Generator[str, None, list[dict]]:
         """Busca emails relevantes"""
