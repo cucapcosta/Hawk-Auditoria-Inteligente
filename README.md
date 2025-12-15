@@ -1,8 +1,10 @@
 # HawkAI
 
 Sistema de Auditoria com Agentes de IA para detectar fraudes e irregularidades na Dunder Mifflin.
+
 Já que eu que fiz, tem que ter um pássaro e periquitos não são particularmente conhecidos por serem caçadores habilidosos com boa visão.
 
+[Video](https://drive.google.com/file/d/1SkGSKi9we8mcIL4AXQ20VZxKArf520IH/view?usp=sharing)
 ## Arquitetura
 
 ```

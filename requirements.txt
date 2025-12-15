@@ -5,6 +5,6 @@ pandas>=2.0.0
 
 # FAISS - escolha uma das opcoes:
 # Para CPU (padrao):
-#faiss-cpu>=1.7.0
+faiss-cpu>=1.7.0
 # Para GPU NVIDIA (descomente e comente a linha acima):
-faiss-gpu>=1.7.0
+# faiss-gpu>=1.7.0
