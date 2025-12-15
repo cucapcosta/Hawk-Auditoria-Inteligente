@@ -6,7 +6,7 @@ Interface estilo Terminal Retro (Fallout/Pip-Boy)
 import streamlit as st
 from datetime import datetime
 from rag import get_rag
-from synth import synthesize
+from synth import synthesize, format_output
 from router import route
 from emails_analyzer import get_emails_analyzer
 from auditor import audit
@@ -453,6 +453,9 @@ if submitted and prompt and not st.session_state.processing:
         
         else:
             answer = "Rota desconhecida."
+        
+        # Passa todas as respostas pelo formatador para garantir consistencia
+        answer = run_generator(format_output(answer), logs, live_logs) or answer
         
         st.session_state.messages.append({"role": "answer", "content": answer})
     
